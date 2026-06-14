@@ -1,3 +1,5 @@
+import { BUNDLE_ID, TIMEOUTS } from './Constants.js';
+
 export const CONTEXT_REF = {
     NATIVE_APP: 'NATIVE_APP',
     WEBVIEW: 'WEBVIEW',
@@ -14,7 +16,10 @@ type ContextInterface = {
     url?: string;
 }
 type IosContext  = {
-    bundleId?: string;
+    bundleId: string;
+    id: string;
+    title: string;
+    url: string;
 }
 type AndroidContext =  {
     packageName?: string;
@@ -50,6 +55,14 @@ type AndroidContext =  {
  *
  * The below class will give you custom implementations for both Android and iOS to get the correct webview.
  * Please read the comments in the code for more information.
+ *
+ * INTENTIONAL LSP NOTE:
+ * `WebView` does NOT extend `BaseScreen` / `AppScreen`. This is deliberate.
+ * `WebView` is a context-management helper that bridges native ↔ webview contexts — it
+ * is not a screen object and has no concept of "is shown" in the native accessibility tree.
+ * `WebviewScreen extends WebView` to compose the context helpers with screen-specific
+ * web-element interactions; `waitForIsShown` is omitted because the webview suite is
+ * Android-only and gated by a `before` guard in the spec.
  */
 class WebView {
     /**
@@ -68,38 +81,48 @@ class WebView {
      * - Android: The string behind `WEBVIEW` will the package name of the app that holds the webview
      * - iOS: The number behind `WEBVIEW` will be a random number in random order.
      */
-    async waitForWebViewContextAdded () {
+    async waitForWebViewContextAdded(): Promise<string> {
+        let webviewName: string = '';
+
         await driver.waitUntil(
             async () => {
                 // Check this method for detailed webview context information
                 const currentContexts = await driver.getContexts({
                     returnAndroidDescriptionData: true,
-                    returnDetailedContexts: true
+                    returnDetailedContexts: true,
                 });
+
                 // The name of the webview can be different on Android and iOS, so we need to check for both
                 const appIdentifier = driver.isIOS ?
-                    // @ts-expect-error
-                    (await browser.execute('mobile: activeAppInfo'))?.bundleId :
-                    await driver.getCurrentPackage()
+                    // iOS 26+ returns org.reactjs.native.example.wdiodemoapp; older returned process-wdiodemoapp.
+                    // Use BUNDLE_ID (the actual registered bundle) and additionalWebviewBundleIds:["*"] in caps.
+                    BUNDLE_ID :
+                    await driver.getCurrentPackage();
 
                 return currentContexts.length > 1 &&
                     currentContexts.find(context => {
                         if (driver.isIOS){
                             // Also check if the url is not blank for iOS, meaning nothing is loaded. This is the "first state" for iOS
-                            return (context as IosContext).bundleId === appIdentifier && (context as ContextInterface)?.url !== 'about:blank';
+                            const foundContext = (context as IosContext).bundleId === appIdentifier && (context as ContextInterface)?.url !== 'about:blank';
+                            if (foundContext) {
+                                webviewName =  (context as IosContext).id;
+                            }
+
+                            return foundContext;
                         }
 
                         // Also check that the matching page is not empty
                         return (context as AndroidContext).packageName === appIdentifier && (context as AndroidContext)?.androidWebviewData?.empty === false;
                     });
             }, {
-                // Wait a max of 45 seconds. Reason for this high amount is that loading
-                // a webview for iOS might take longer
-                timeout: 45000,
+                // iOS webview context detection can take up to 45 s on first launch
+                timeout: TIMEOUTS.VERY_LONG,
                 timeoutMsg: 'Webview context not loaded',
                 interval: 100,
             },
         );
+
+        return webviewName;
     }
 
     /**
@@ -114,8 +137,8 @@ class WebView {
             // https://www.w3.org/TR/webdriver/#dfn-waiting-for-the-navigation-to-complete
             async() => (await driver.execute(() => document.readyState)) === DOCUMENT_READY_STATE.COMPLETE,
             {
-                timeout: 15000,
-                timeoutMsg: 'Website not loaded',
+                timeout: TIMEOUTS.MEDIUM,
+                timeoutMsg: 'Website not fully loaded',
                 interval: 100,
             },
         );
@@ -125,13 +148,32 @@ class WebView {
      * Wait for the website in the webview to be loaded
      */
     async waitForWebsiteLoaded () {
-        await this.waitForWebViewContextAdded();
+        const webviewName = await this.waitForWebViewContextAdded();
         // we know we want to switch to the webview of WebdriverIO, so we can already provide the title and url that expect to find.
         // This will make the search more accurate
-        await driver.switchContext({
-            title: /WebdriverIO.*/,
-            url: 'https://webdriver.io/',
-        });
+        if (driver.isIOS) {
+            // We need to update the switchContext in WebdriverIO to also be able to pass a packageName or bundleID
+            // because it now automatically detects it based on the current active app
+            // which in some cases is not correct
+            await driver.switchAppiumContext(webviewName);
+        } else {
+            // Android WebView inspection requires the app to call
+            // WebView.setWebContentsDebuggingEnabled(true) at runtime; without it,
+            // Appium cannot enumerate or switch to the WebView context.
+            // Android: the webview may be attached (empty===false) before the title is populated.
+            // Retry until the title matches rather than failing on the first attempt.
+            await driver.waitUntil(async () => {
+                try {
+                    await driver.switchContext({
+                        title: /WebdriverIO.*/,
+                        url: 'https://webdriver.io/',
+                    });
+                    return true;
+                } catch {
+                    return false;
+                }
+            }, { timeout: TIMEOUTS.EXTRA_LONG, interval: 2000, timeoutMsg: `WebView context with WebdriverIO title not available after ${TIMEOUTS.EXTRA_LONG / 1000}s` });
+        }
         await this.waitForDocumentFullyLoaded();
         await driver.switchContext(CONTEXT_REF.NATIVE_APP);
     }

@@ -1,8 +1,25 @@
-import { DEFAULT_PIN } from '../helpers/Constants.js';
+import { DEFAULT_PIN, TIMEOUTS } from '../helpers/Constants.js';
+
+/** Minimum Android API levels at which each enrollment UI path first appeared. */
+const ANDROID_VERSION = {
+    ANDROID_10: 10,
+    ANDROID_12: 12,
+    ANDROID_14: 14,
+    ANDROID_16: 16,
+} as const;
+
+const SELECTORS = {
+    // Settings-app elements have no accessibility IDs, so UiAutomator2 text/description
+    // matching is the most stable strategy available here.
+    DISMISS_BY_DESCRIPTION: 'android=new UiSelector().descriptionContains("Dismiss")',
+    DISMISS_BY_TEXT: 'android=new UiSelector().textMatches("(?i)Dismiss")',
+    /** Case-insensitive regex text match — Settings labels vary across Android versions. */
+    byTextPattern: (pattern: string) => `android=new UiSelector().textMatches("(?i)${pattern}")`,
+} as const;
 
 class AndroidSettings {
     /**
-     * Get the platform version
+     * Get the numeric Android platform version from the active session capabilities.
      */
     private get platformVersion(): number {
         return parseInt(
@@ -11,38 +28,143 @@ class AndroidSettings {
         );
     }
 
+    // ── Public API ────────────────────────────────────────────────────────────
+
     /**
-     * Enable the finger print through the wizard
+     * Walk through all steps to enable fingerprint biometrics, from Android 9 (2018)
+     * to the latest version, fully automatically.
+     */
+    async enableBiometricLogin() {
+        // --activity-clear-task forces the Settings app to start fresh on the Security &
+        // Privacy root screen even when a sub-screen (e.g. Account security) is already
+        // in the foreground from a previous test step.
+        await this.executeAdbCommand('am start --activity-clear-task -a android.settings.SECURITY_SETTINGS');
+        await this.ensurePinIsSet();
+
+        if (this.platformVersion >= ANDROID_VERSION.ANDROID_16) {
+            await this.navigateToFingerprintAndroid16();
+        } else if (this.platformVersion >= ANDROID_VERSION.ANDROID_14) {
+            await this.navigateToFingerprintAndroid14();
+        } else {
+            await this.waitAndTap('.*Fingerprint.*');
+        }
+
+        await this.fingerPrintWizard(DEFAULT_PIN);
+    }
+
+    /**
+     * Find an Android element by a text pattern (case-insensitive regex match).
+     * Returns a ChainablePromiseElement directly — no await needed at the call site.
+     */
+    findAndroidElementByMatchingText(pattern: string) {
+        return $(SELECTORS.byTextPattern(pattern));
+    }
+
+    /**
+     * Wait for an element matching `pattern` to be displayed.
+     */
+    async waitForMatchingElement(pattern: string) {
+        await this.findAndroidElementByMatchingText(pattern).waitForDisplayed({
+            timeout: TIMEOUTS.SHORT,
+            timeoutMsg: `Element matching "${pattern}" not shown within ${TIMEOUTS.SHORT / 1000}s`,
+        });
+    }
+
+    /**
+     * Resolve the matching element once, wait for it, then click.
+     * Resolving once prevents the race where the element disappears between
+     * the waitForDisplayed call and a second findElement lookup.
+     */
+    async waitAndTap(pattern: string) {
+        const element = this.findAndroidElementByMatchingText(pattern);
+        await element.waitForDisplayed({
+            timeout: TIMEOUTS.SHORT,
+            timeoutMsg: `Element matching "${pattern}" not shown within ${TIMEOUTS.SHORT / 1000}s`,
+        });
+        await element.click();
+    }
+
+    // ── Navigation helpers (version-specific paths into fingerprint setup) ────
+
+    /**
+     * Android 16: after a fingerprint is already enrolled the OS shows a "Fingerprint"
+     * shortcut directly on the Security & Privacy screen.  On a fresh/wiped device
+     * (no fingerprint enrolled yet) that shortcut is absent and the entry point is
+     * "Device unlock" instead — the same path used by Android 14/15.
+     * Try the direct shortcut first; fall back to "Device unlock" if it isn't there.
+     */
+    private async navigateToFingerprintAndroid16() {
+        const fingerprintVisible = await this.findAndroidElementByMatchingText('Fingerprint|Pixel Imprint')
+            .isDisplayed()
+            .catch(() => false);
+
+        if (!fingerprintVisible) {
+            // "Device unlock" may be below the fold — scroll down until it is visible,
+            // then tap it to reach the fingerprint sub-screen.
+            await driver.waitUntil(
+                async () => {
+                    const el = this.findAndroidElementByMatchingText('Device unlock.*');
+                    if (await el.isDisplayed().catch(() => false)) return true;
+                    await driver.execute('mobile: scroll', { direction: 'down', percent: 0.5 });
+                    return false;
+                },
+                { timeout: TIMEOUTS.MEDIUM, timeoutMsg: '"Device unlock" not found after scrolling Security & Privacy' },
+            );
+            await this.waitAndTap('Device unlock.*');
+        }
+
+        await this.closeSettingsScreenLockNotifications();
+        await this.waitAndTap('Fingerprint|Pixel Imprint');
+        await this.reEnterPin(DEFAULT_PIN);
+        await this.waitAndTap('MORE');
+        await this.waitAndTap('I AGREE');
+    }
+
+    /** Android 14/15: Fingerprint lives under "Device unlock & biometrics". */
+    private async navigateToFingerprintAndroid14() {
+        await this.waitForMatchingElement('Device unlock.*');
+        await this.closeSettingsScreenLockNotifications();
+        await this.waitAndTap('Device unlock.*');
+        await this.waitAndTap('.*Fingerprint.*');
+    }
+
+    // ── Enrollment wizard steps ───────────────────────────────────────────────
+
+    /**
+     * Run the correct enrollment wizard flow for the current platform version.
      */
     private async fingerPrintWizard(pin: number) {
-        // There is a difference in the order the wizard in Android 10+ is executed
-        if (this.platformVersion >= 10) {
+        if (this.platformVersion >= ANDROID_VERSION.ANDROID_10) {
             await this.postAndroidTenFingerPrintSetup(pin);
         } else {
             await this.preAndroidTenFingerPrintSetup(pin);
         }
-
         await this.touchFingerPrintSensor(pin);
         await this.waitAndTap('DONE');
     }
 
-    /**
-     * Pre Android 10 finger print setup steps
-     */
-    private async preAndroidTenFingerPrintSetup(pin: number){
+    /** Pre-Android 10 setup: NEXT → re-enter PIN. */
+    private async preAndroidTenFingerPrintSetup(pin: number) {
         await this.waitAndTap('NEXT');
         await this.reEnterPin(pin);
     }
 
-    /**
-     * Post Android 10 finger print setup steps
-     */
-    private async postAndroidTenFingerPrintSetup(pin: number){
-        await this.reEnterPin(pin);
-        if (this.platformVersion >= 14) {
-            await this.waitAndTap('Pixel Imprint');
+    /** Android 10–15 setup: re-enter PIN, accept T&C based on version. */
+    private async postAndroidTenFingerPrintSetup(pin: number) {
+        // The platformVersion >= 16 guard here intentionally mirrors the routing
+        // in fingerPrintWizard. The caller reaches this method only for versions >= 10,
+        // but Android 16 already completed PIN + T&C in navigateToFingerprintAndroid16(),
+        // so we exit early to skip the redundant steps.  Keeping the guard in both
+        // layers avoids a silent regression if callers are refactored independently.
+        if (this.platformVersion >= ANDROID_VERSION.ANDROID_16) {
+            return;
         }
-        if (this.platformVersion >= 12) {
+        await this.reEnterPin(pin);
+        if (this.platformVersion >= ANDROID_VERSION.ANDROID_14) {
+            await this.waitAndTap('Pixel Imprint|.*Fingerprint.*');
+            await this.waitAndTap('MORE');
+            await this.waitAndTap('I AGREE');
+        } else if (this.platformVersion >= ANDROID_VERSION.ANDROID_12) {
             await this.waitAndTap('MORE');
             await this.waitAndTap('I AGREE');
         } else {
@@ -50,98 +172,88 @@ class AndroidSettings {
         }
     }
 
-    /**
-     * Re-enter pin and submit screen
-     */
+    /** Wait for the PIN-entry screen then submit the PIN via ADB. */
     private async reEnterPin(pin: number) {
-        await (await this.findAndroidElementByMatchingText('Re-enter your PIN')).waitForDisplayed({ timeout: 10*1000 });
+        await this.findAndroidElementByMatchingText(
+            'Enter your device PIN|Re-enter your PIN|Confirm your PIN|Enter your PIN',
+        ).waitForDisplayed({
+            timeout: TIMEOUTS.MEDIUM,
+            timeoutMsg: `PIN confirmation prompt not shown within ${TIMEOUTS.MEDIUM / 1000}s`,
+        });
         await this.executeAdbCommand(`input text ${pin} && input keyevent 66`);
     }
 
+    // ── Sensor touch steps ────────────────────────────────────────────────────
+
     /**
-     * Touch the fingerprint sensor and enable it
+     * Simulate the required finger touches to complete fingerprint enrollment.
+     * The number of touches and prompt text differ by Android version.
      */
     private async touchFingerPrintSensor(touchCode: number) {
-        // Touch the sensor for the first time to trigger finger print
-        await (await this.findAndroidElementByMatchingText('Touch the sensor.*')).waitForDisplayed({ timeout: 10*1000 });
-        await driver.fingerPrint(touchCode);
-
-        // Add finger print
-        await (await this.findAndroidElementByMatchingText('Put your finger.*')).waitForDisplayed({ timeout: 10*1000 });
-        await driver.fingerPrint(touchCode);
-
-        // Confirm finger print
-        await (await this.findAndroidElementByMatchingText('Keep lifting.*')).waitForDisplayed({ timeout: 10*1000 });
-        await driver.fingerPrint(touchCode);
+        if (this.platformVersion >= ANDROID_VERSION.ANDROID_16) {
+            await this.touchSensorAndroid16(touchCode);
+        } else {
+            await this.touchSensorLegacy(touchCode);
+        }
     }
 
-    /**
-     * Execute ADB commands on the device
-     */
-    private async executeAdbCommand(adbCommand: string) {
-        await driver.execute('mobile: shell', {
-            command: adbCommand,
+    /** Android 16 requires exactly 3 touches with specific prompt progression. */
+    private async touchSensorAndroid16(touchCode: number) {
+        await this.waitForPromptAndTouch('Touch the sensor', touchCode, TIMEOUTS.LONG);
+        await this.waitForPromptAndTouch('Lift, then touch again', touchCode, TIMEOUTS.SHORT);
+        await this.waitForPromptAndTouch('Lift finger, then touch sensor again', touchCode, TIMEOUTS.SHORT);
+        await this.findAndroidElementByMatchingText('Fingerprint added').waitForDisplayed({
+            timeout: TIMEOUTS.MEDIUM,
+            timeoutMsg: `Fingerprint added confirmation not shown within ${TIMEOUTS.MEDIUM / 1000}s`,
         });
     }
 
-    /**
-     * Find an Android element based on text that matches a regular expression which is case insensitive
-     */
-    async findAndroidElementByMatchingText(string: string) {
-        const selector = `android=new UiSelector().textMatches("(?i)${string}")`;
-
-        return $(selector);
+    /** Pre-Android-16 enrollment: three separate prompt/touch pairs. */
+    private async touchSensorLegacy(touchCode: number) {
+        await this.waitForPromptAndTouch('Touch the sensor.*|Lift, then touch.*', touchCode, TIMEOUTS.LONG);
+        await this.waitForPromptAndTouch('Put your finger.*', touchCode, TIMEOUTS.SHORT);
+        await this.waitForPromptAndTouch('Keep lifting.*', touchCode, TIMEOUTS.SHORT);
     }
 
-    /**
-     * Wait on an element
-     */
-    async waitForMatchingElement(string: string) {
-        await (await this.findAndroidElementByMatchingText(string)).waitForDisplayed({ timeout: 10*1000 });
-    }
-    /**
-     * Wait and click on an element
-     */
-    async waitAndTap(string: string) {
-        await this.waitForMatchingElement(string);
-        await (await this.findAndroidElementByMatchingText(string)).click();
+    /** Wait for a sensor-prompt element and immediately simulate a finger touch. */
+    private async waitForPromptAndTouch(promptPattern: string, touchCode: number, timeout: number) {
+        await this.findAndroidElementByMatchingText(promptPattern).waitForDisplayed({
+            timeout,
+            timeoutMsg: `Sensor prompt "${promptPattern}" not shown within ${timeout / 1000}s`,
+        });
+        await driver.fingerPrint(touchCode);
     }
 
-    /**
-     * Close the settings Screen lock notifications
-     */
-    async closeSettingsScreenLockNotifications(){
+    // ── Utility helpers ───────────────────────────────────────────────────────
+
+    /** Set PIN on a fresh emulator; re-use the same PIN on a previously set emulator. */
+    private async ensurePinIsSet() {
         try {
-            if (await (await this.findAndroidElementByMatchingText('Set screen lock')).isDisplayed()){
-                await $('android=new UiSelector().descriptionContains("Dismiss")').click();
-                await $('android=new UiSelector().textMatches("(?i)Dismiss")').click();
-            }
-        } catch (ign) { /* do nothing */ }
+            await this.executeAdbCommand(`locksettings set-pin ${DEFAULT_PIN}`);
+        } catch {
+            await this.executeAdbCommand(`locksettings set-pin --old ${DEFAULT_PIN} ${DEFAULT_PIN}`);
+        }
     }
 
-    /**
-     * This is the core methods to enable FingerPrint for Android. It will walk through all steps to enable
-     * FingerPrint on Android 9 (2018) till the latest one all automatically for you.
-     */
-    async enableBiometricLogin() {
-        // Open the settings screen and set screen lock to pin
-        await this.executeAdbCommand(
-            `am start -a android.settings.SECURITY_SETTINGS && locksettings set-pin ${DEFAULT_PIN}`,
-        );
-        // As of Android 14 there is a new flow to enable finger print
-        if (this.platformVersion >= 14) {
-            // There might be two Device unlock options, the first is the notification, the second is the actual setting
-            // First wait for the right screen to be shown
-            await this.waitForMatchingElement('Device unlock.*');
-            // Android 14 might have notifications that might block searching the right element, so we need to close them
-            await this.closeSettingsScreenLockNotifications();
-            await this.waitAndTap('Device unlock');
-            await this.waitAndTap('.*Fingerprint.*Unlock');
-        } else {
-            await this.waitAndTap('.*Fingerprint.*');
-        }
-        await this.fingerPrintWizard(DEFAULT_PIN);
+    /** Close any "Set screen lock" notification that blocks the fingerprint setting. */
+    private async closeSettingsScreenLockNotifications() {
+        try {
+            if (await this.findAndroidElementByMatchingText('Set screen lock').isDisplayed()) {
+                const byDesc = $(SELECTORS.DISMISS_BY_DESCRIPTION);
+                await byDesc.click();
+                // A second dismiss button (matched by text) may exist on some ROMs; only tap
+                // it if still visible after the first click to avoid a stale-element throw.
+                const byText = $(SELECTORS.DISMISS_BY_TEXT);
+                if (await byText.isDisplayed()) {
+                    await byText.click();
+                }
+            }
+        } catch { /* notification not present — safe to ignore */ }
+    }
 
+    /** Run an ADB shell command via the Appium mobile:shell extension. */
+    private async executeAdbCommand(adbCommand: string) {
+        await driver.execute('mobile: shell', { command: adbCommand });
     }
 }
 

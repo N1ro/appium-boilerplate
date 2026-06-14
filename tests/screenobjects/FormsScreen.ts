@@ -2,6 +2,16 @@ import AppScreen from './AppScreen.js';
 
 const SELECTORS = {
     SCREEN: '~Forms-screen',
+    INPUT: '~text-input',
+    INPUT_RESULT: '~input-text-result',
+    SWITCH: '~switch',
+    SWITCH_TEXT: '~switch-text',
+    DROPDOWN: '~Dropdown',
+    DROPDOWN_CHEVRON: '~dropdown-chevron',
+    ACTIVE_BUTTON: '~button-Active',
+    INACTIVE_BUTTON: '~button-Inactive',
+    DROPDOWN_VALUE_ANDROID: 'android=new UiSelector().descriptionContains("Dropdown").childSelector(new UiSelector().className("android.widget.EditText"))',
+    DROPDOWN_VALUE_IOS: '-ios class chain:**/*[`name == "Dropdown"`]/**/*[`name == "text_input"`]',
 };
 
 class FormsScreen extends AppScreen {
@@ -9,14 +19,26 @@ class FormsScreen extends AppScreen {
         super(SELECTORS.SCREEN);
     }
 
+    // ~Forms-screen is a plain View on iOS 26.x — not in the accessibility tree. Use text-input instead.
+    override async waitForIsShown (isShown = true): Promise<boolean | void> {
+        return $(SELECTORS.INPUT).waitForDisplayed({
+            reverse: !isShown,
+            timeoutMsg: `Screen (Forms) not ${isShown ? 'shown' : 'hidden'} within timeout`,
+        });
+    }
+
     get screen () {return $(SELECTORS.SCREEN);}
-    get input () {return $('~text-input');}
-    get inputTextResult () {return $('~input-text-result');}
-    get switch () {return $('~switch');}
-    get switchText () {return $('~switch-text');}
-    get dropDown () {return $('~Dropdown');}
-    get activeButton () {return $('~button-Active');}
-    get inActiveButton () {return $('~button-Inactive');}
+    get input () {return $(SELECTORS.INPUT);}
+    get inputTextResult () {return $(SELECTORS.INPUT_RESULT);}
+    get switch () {return $(SELECTORS.SWITCH);}
+    get switchText () {return $(SELECTORS.SWITCH_TEXT);}
+    get dropDown () {return $(SELECTORS.DROPDOWN);}
+    private get dropDownChevron () {return $(SELECTORS.DROPDOWN_CHEVRON);}
+    get activeButton () {return $(SELECTORS.ACTIVE_BUTTON);}
+    get inActiveButton () {return $(SELECTORS.INACTIVE_BUTTON);}
+    private get dropDownValue () {
+        return $(driver.isAndroid ? SELECTORS.DROPDOWN_VALUE_ANDROID : SELECTORS.DROPDOWN_VALUE_IOS);
+    }
 
     async tapOnInputTextResult(){
         await this.inputTextResult.click();
@@ -27,7 +49,12 @@ class FormsScreen extends AppScreen {
     }
 
     async tapOnDropDown(){
-        await this.dropDown.click();
+        // On iOS 26.x the tap must target the chevron to open the native PickerWheel;
+        // clicking the container element directly does not trigger the picker.
+        if (driver.isIOS) {
+            return this.dropDownChevron.click();
+        }
+        return this.dropDown.click();
     }
 
     async tapOnActiveButton(){
@@ -39,36 +66,22 @@ class FormsScreen extends AppScreen {
     }
 
     /**
-     * Return if the switch is active or not active for iOS / Android
-     * For Android the switch is `"true"|"false"`, for iOS '1|0'
+     * Dismiss the keyboard after typing in the input field.
+     * Taps the input-result area — a safe native-element target that also
+     * dismisses the keyboard without triggering any side-effects.
      */
-    async isSwitchActive ():Promise<boolean> {
-        return driver.isAndroid ? (await this.switch.getAttribute('checked')) === 'true' : (await this.switch.getText()) === '1';
+    async dismissKeyboardAfterInput(): Promise<void> {
+        await this.dismissKeyboard(this.inputTextResult);
     }
 
-    /**
-     * Get the text of the drop down component
-     */
+    async isSwitchActive ():Promise<boolean> {
+        return driver.isAndroid
+            ? (await this.switch.getAttribute('checked')) === 'true'
+            : (await this.switch.getText()) === '1';
+    }
+
     async getDropDownText ():Promise<string> {
-        // We need to do some magic here to get the value of the dropdown for Android and for iOS
-        // return getTextOfElement(this.dropDown);
-        // For Android the selected value can be found with this XPATH
-        // `//android.view.ViewGroup[@content-desc="Dropdown"]/android.view.ViewGroup/android.widget.EditText`
-        // Which is `//*[@content-desc="Dropdown"]/*/android.widget.EditText` so it's let element dependent
-        let selector;
-
-        if (driver.isAndroid) {
-            selector ='//*[@content-desc="Dropdown"]/*/android.widget.EditText';
-        } else {
-            // **/*[`name == "Dropdown"`]/**/*[`name == "text_input"`]
-            // For iOS we can use XPATH to the the text, this will be `//XCUIElementTypeTextField[@name="text_input"]`
-            // The downside is that it will take at least 500ms to find the element. We can also use a less brittle
-            // selector which is also faster. This is the `ios class chain` selector. To make it more robust
-            // we need to use the following selector.
-            selector = '-ios class chain:**/*[`name == "Dropdown"`]/**/*[`name == "text_input"`]';
-        }
-
-        return $(selector).getText();
+        return this.dropDownValue.getText();
     }
 }
 

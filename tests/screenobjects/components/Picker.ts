@@ -1,7 +1,13 @@
+import { TIMEOUTS } from '../../helpers/Constants.js';
+
 const SELECTORS = {
-    ANDROID_LISTVIEW: '//android.widget.ListView',
+    // The Android platform picker dialog exposes no resource-id or accessibility id,
+    // so a UiAutomator2 className match is the most stable locator available here.
+    ANDROID_LISTVIEW: 'android=new UiSelector().className("android.widget.ListView")',
     IOS_PICKERWHEEL: '-ios predicate string:type == \'XCUIElementTypePickerWheel\'',
     DONE: '~done_button',
+    /** Select an Android picker item by its exact visible text label. */
+    byText: (value: string) => `android=new UiSelector().text("${value}")`,
 };
 
 class Picker {
@@ -9,12 +15,11 @@ class Picker {
      * Wait for the picker to be shown
      */
     static async waitForIsShown (isShown = true) {
-        // iOS and Android have different elements we need to interact with
-        // we determine the selector here
         const selector = driver.isIOS ? SELECTORS.IOS_PICKERWHEEL : SELECTORS.ANDROID_LISTVIEW;
         await $(selector).waitForExist({
-            timeout: 11000,
+            timeout: TIMEOUTS.SHORT_PLUS,
             reverse: !isShown,
+            timeoutMsg: `Picker not ${isShown ? 'shown' : 'hidden'} within ${TIMEOUTS.SHORT_PLUS / 1000}s`,
         });
     }
 
@@ -22,15 +27,12 @@ class Picker {
      * Select a value from the picker
      */
     static async selectValue (value:string) {
-        // Wait for the picker to be shown
         await this.waitForIsShown(true);
-        // There is a difference between setting the value for iOS and Android
         if (driver.isIOS) {
             await this.setIOSValue(value);
         } else {
             await this.setAndroidValue(value);
         }
-        // Wait for the picker to be gone
         await this.waitForIsShown(false);
     }
 
@@ -38,8 +40,7 @@ class Picker {
      * Set the value for Android
      */
     private static async setAndroidValue (value:string) {
-        // For Android we can click on a value, if it's in the list, based on the text
-        await $(`${SELECTORS.ANDROID_LISTVIEW}/*[@text='${value}']`).click();
+        await $(SELECTORS.byText(value)).click();
     }
 
     /**

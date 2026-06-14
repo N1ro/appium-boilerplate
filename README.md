@@ -1,9 +1,11 @@
 # Appium Boilerplate
 
-**NOTE:** This boilerplate is for Webdriver V8 where the tests are written with `async`/`await` and TypeScript. If you need a boilerplate for older versions, check the following:
 
-- V7 (JavaScript) please click [here](https://github.com/webdriverio/appium-boilerplate/tree/v7)
-- V7 (TypeScript, sync mode) please click [here](https://github.com/webdriverio/appium-boilerplate/tree/sync-mode)
+> [!NOTE]
+> This boilerplate is for Webdriver V8 where the tests are written with `async`/`await` and TypeScript. If you need a boilerplate for older versions, check the following:
+>
+> - V7 (JavaScript) please click [here](https://github.com/webdriverio/appium-boilerplate/tree/v7)
+> - V7 (TypeScript, sync mode) please click [here](https://github.com/webdriverio/appium-boilerplate/tree/sync-mode)
 
 Boilerplate project to run Appium tests together with WebdriverIO for:
 
@@ -22,7 +24,7 @@ Boilerplate project to run Appium tests together with WebdriverIO for:
 This boilerplate is currently based on:
 
 - **WebdriverIO:** `9.x`
-- **Appium:** `2.x`
+- **Appium:** `3.x`
 
 ## Installation
 
@@ -74,6 +76,84 @@ This shared config holds **all the defaults** so the iOS and Android configs onl
 Please check the [`wdio.shared.conf.ts`](./config/wdio.shared.conf.ts)-file for the minimal configuration options. Notes are added for why a different value has been selected in comparison to the default values WebdriverIO provides.
 
 Since we do not have Appium installed as part of this package we are going to use the globally installed version of Appium. This is configured in [`wdio.shared.local.appium.conf.ts`](./config/wdio.shared.local.appium.conf.ts).
+
+## 🔥 NEW 🔥 Using Appium Inspector in your browser
+
+The Appium Inspector is a powerful tool that allows you to inspect and interact with your mobile app's elements during development and debugging. The `wdio-appium-service` now supports the `appium-inspector-plugin` which can be started directly using `npx`.
+
+### Prerequisites
+
+- Node modules must be installed (`npm install`)
+- The appium server and needed drivers (already included in this boilerplate)
+- The `appium-inspector-plugin` package (already included in this boilerplate)
+
+### Usage
+
+You can start the Appium Inspector using the `npx` command:
+
+```sh
+# Use default port 4723
+npx start-appium-inspector
+
+# Use custom port
+npx start-appium-inspector --port 4725
+```
+
+> [!WARNING]
+> **Important**: The default Appium port is **4723**. If you use a different port when starting the inspector, you **must** also update the "Remote Port" field in the Appium Inspector interface to match your custom port. Otherwise, the Inspector will not be able to connect to your Appium server.
+
+### Browser Compatibility
+
+- **Chrome**: Fully supported and recommended
+- **Other browsers**: May have limited functionality
+
+### Capabilities Configuration
+
+When using the Appium Inspector, you'll need to configure capabilities that match your target device and app. Here are examples based on this boilerplate's configuration:
+
+#### Android Capabilities Example
+```json
+{
+  "platformName": "Android",
+  "appium:deviceName": "Pixel_8_Pro_Android_15_API_35",
+  "appium:platformVersion": "15.0",
+  "appium:orientation": "PORTRAIT",
+  "appium:automationName": "UiAutomator2",
+  "appium:app": "/path/to/your/app.apk",
+  "appium:appWaitActivity": "com.wdiodemoapp.MainActivity",
+  "appium:newCommandTimeout": 240
+}
+```
+
+#### iOS Capabilities Example
+```json
+{
+  "platformName": "iOS",
+  "appium:deviceName": "iPhone 16 Pro",
+  "appium:platformVersion": "18.5",
+  "appium:orientation": "PORTRAIT",
+  "appium:automationName": "XCUITest",
+  "appium:app": "/path/to/your/app.zip",
+  "appium:newCommandTimeout": 240,
+  "appium:webviewConnectTimeout": 5000
+}
+```
+
+> [!NOTE]
+> Make sure to update the device names, platform versions, and app paths to match your specific setup.
+
+### Inspector URL
+
+Once the server and inspector are running, the Appium Inspector will be available at:
+- **Appium Server**: http://localhost:4723 (or your custom port)
+
+### Stopping the Inspector
+
+Press `Ctrl+C` in the terminal to stop the Appium Inspector.
+
+### Additional Resources
+
+For more detailed information about using the Appium Inspector, visit the [official Appium Inspector documentation](https://appium.io/docs/en/2.1/guides/inspecs/).
 
 ## Locator strategy for native apps
 

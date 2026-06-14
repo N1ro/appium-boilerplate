@@ -1,13 +1,22 @@
-import { DEFAULT_PIN, INCORRECT_PIN } from './Constants.js';
+import { DEFAULT_PIN, INCORRECT_PIN, TIMEOUTS } from './Constants.js';
 import { executeInHomeScreenContext } from './Utils.js';
 
-class Biometrics {
-    private get iosAllowBiometry() {return $('~Don’t Allow');}
-    private get allowBiometry() {return $('-ios class chain:**/XCUIElementTypeButton[`name == "Allow" OR name=="OK"`]');}
-    private get androidBiometryAlert() {
-        const regex = '(Please log in|Login with.*)';
+const SELECTORS = {
+    // U+2019 RIGHT SINGLE QUOTATION MARK in the string value matches the iOS system button label.
+    IOS_DONT_ALLOW: '~Don’t Allow',
+    // Class Chain covers both "Allow" (Touch ID) and "OK" (Face ID) permission buttons.
+    IOS_ALLOW_BIOMETRY: '-ios class chain:**/XCUIElementTypeButton[`name == "Allow" OR name=="OK"`]',
+    // Regex matches both the initial login prompt and subsequent re-auth prompts.
+    ANDROID_BIOMETRY_ALERT: (regex: string) => `android=new UiSelector().textMatches("${regex}")`,
+} as const;
 
-        return $(`android=new UiSelector().textMatches("${regex}")`);
+const ANDROID_BIOMETRY_REGEX = '(Please log in|Login with.*)';
+
+class Biometrics {
+    private get iosAllowBiometry() {return $(SELECTORS.IOS_DONT_ALLOW);}
+    private get allowBiometry() {return $(SELECTORS.IOS_ALLOW_BIOMETRY);}
+    private get androidBiometryAlert() {
+        return $(SELECTORS.ANDROID_BIOMETRY_ALERT(ANDROID_BIOMETRY_REGEX));
     }
 
     /**
@@ -44,10 +53,10 @@ class Biometrics {
         // - https://github.com/appium/appium/issues/19716
         await executeInHomeScreenContext(async () => {
             try {
-                await this.iosAllowBiometry.waitForDisplayed({ timeout: 3 * 1000 });
+                await this.iosAllowBiometry.waitForDisplayed({ timeout: TIMEOUTS.VERY_SHORT, timeoutMsg: 'iOS biometry permission alert not shown within timeout' });
                 await this.allowBiometry.click();
-            } catch (e) {
-                // This means that allow using touch/facID has already been accepted and thus the alert is not shown
+            } catch {
+                // Biometry permission already accepted — alert not shown, safe to continue
             }
         });
     }
@@ -56,7 +65,7 @@ class Biometrics {
      * Submit Android biometric login
      */
     async submitAndroidBiometricLogin(fingerprintId:number) {
-        await this.androidBiometryAlert.waitForDisplayed({ timeout: 10 *1000 });
+        await this.androidBiometryAlert.waitForDisplayed({ timeout: TIMEOUTS.SHORT, timeoutMsg: 'Android biometry alert not shown within timeout' });
 
         await driver.fingerPrint(fingerprintId);
     }

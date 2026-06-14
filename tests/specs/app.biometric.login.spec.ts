@@ -3,8 +3,8 @@ import LoginScreen from '../screenobjects/LoginScreen.js';
 import Biometrics from '../helpers/Biometrics.js';
 import NativeAlert from '../screenobjects/components/NativeAlert.js';
 import AndroidSettings from '../screenobjects/AndroidSettings.js';
-import { executeInHomeScreenContext, relaunchApp } from '../helpers/Utils.js';
-import { BUNDLE_ID, PACKAGE_NAME } from '../helpers/Constants.js';
+import { executeInHomeScreenContext, isAndroidRealDevice, relaunchApp } from '../helpers/Utils.js';
+import { BUNDLE_ID, PACKAGE_NAME, TIMEOUTS } from '../helpers/Constants.js';
 
 /**
  * IMPORTANT!
@@ -14,7 +14,31 @@ import { BUNDLE_ID, PACKAGE_NAME } from '../helpers/Constants.js';
  * you for Android 9.0 (2018) till the latest version of Android.
  */
 describe('WebdriverIO and Appium, when interacting with a biometric button,', () => {
-    beforeEach(async () => {
+    // Use a regular function (not arrow) so `this.skip()` binds correctly in Mocha.
+    beforeEach(async function () {
+        // wdio-native-demo-app v2.2.0 does not render the biometric button on iOS 26.x.
+        // The app's LocalAuthentication availability check returns false regardless of
+        // simulator enrollment state — this is an app-level incompatibility with iOS 26.x.
+        // TODO: remove this guard once the demo app is updated to support iOS 26.x.
+        // Appium strips the 'appium:' prefix from capabilities in the session response,
+        // so the key is 'platformVersion' at runtime, not 'appium:platformVersion'.
+        // Check both forms to be safe.
+        const caps = driver.capabilities as Record<string, unknown>;
+        const platformVersion = (
+            caps['platformVersion'] ??
+            caps['appium:platformVersion'] ??
+            '0'
+        ) as string;
+        if (driver.isIOS && parseInt(platformVersion, 10) >= 26) {
+            return this.skip();
+        }
+
+        // driver.fingerPrint() is emulator-only on Android — it throws on real devices.
+        // Skip the entire suite when running against a real Android device.
+        if (isAndroidRealDevice()) {
+            return this.skip();
+        }
+
         await goToLoginPage();
 
         // If the biometry is not shown on iOS, enable it on the phone
@@ -49,13 +73,23 @@ describe('WebdriverIO and Appium, when interacting with a biometric button,', ()
         await expect(await NativeAlert.text()).toContain('Success');
 
         if (driver.isIOS){
-            // Before we can close the alert we need to wait for the native "Face ID" modal to disappear
-            // This modal can not be detected by Appium, so we need to wait for it to disappear
-            await driver.pause(750);
+            // The native Face ID overlay briefly obscures the alert after a successful match.
+            // Poll until the alert is reachable rather than sleeping a fixed amount of time.
+            await driver.waitUntil(
+                async () => {
+                    try {
+                        await NativeAlert.waitForIsShown(true);
+                        return true;
+                    } catch {
+                        return false;
+                    }
+                },
+                { timeout: TIMEOUTS.QUICK, interval: 250, timeoutMsg: 'Alert not tappable after Face ID overlay disappeared' },
+            );
         }
 
         // Close the alert
-        await NativeAlert.topOnButtonWithText('OK');
+        await NativeAlert.tapOnButtonWithText('OK');
         await NativeAlert.waitForIsShown(false);
     });
 
@@ -80,13 +114,13 @@ describe('WebdriverIO and Appium, when interacting with a biometric button,', ()
                 await expect(await NativeAlert.text()).toContain('Not Recogni');
 
                 // Close the alert
-                await NativeAlert.topOnButtonWithText('Cancel');
+                await NativeAlert.tapOnButtonWithText('Cancel');
                 await NativeAlert.waitForIsShown(false);
             });
         } else {
             await AndroidSettings.waitAndTap('Cancel');
             // @TODO: This takes very long, need to fix this
-            await (await AndroidSettings.findAndroidElementByMatchingText('Cancel')).waitForDisplayed({ reverse:true });
+            await AndroidSettings.findAndroidElementByMatchingText('Cancel').waitForDisplayed({ reverse: true, timeout: TIMEOUTS.LONG, timeoutMsg: 'Cancel button still visible after biometric failure' });
             await NativeAlert.waitForIsShown(false);
         }
     });

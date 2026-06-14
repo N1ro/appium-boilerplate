@@ -1,3 +1,13 @@
+import { BUNDLE_ID, PACKAGE_NAME } from './Constants.js';
+
+// iOS Safari selectors used by openDeepLinkUrl on real devices.
+// Predicate String is preferred over accessibility ID — the label "Address" vs "URL"
+// differs between iOS versions, making a single predicate condition more stable.
+const SELECTORS = {
+    IOS_SAFARI_ADDRESS_BAR: '-ios predicate string:label == "Address" OR name == "URL"',
+    IOS_SAFARI_URL_FIELD: '-ios predicate string:type == "XCUIElementTypeTextField" && name CONTAINS "URL"',
+} as const;
+
 /**
  * Get the time difference in seconds
  */
@@ -13,9 +23,23 @@ export function timeDifference (string: string, start:number, end:number) {
  * iOS sims have more than 1 `-` in the UDID and the UDID is being
  */
 export function isIosRealDevice(){
-    const realDeviceRegex = /^[a-f0-9]{25}|[a-f0-9]{40}$/i;
+    const realDeviceRegex = /^([a-f0-9]{25}|[a-f0-9]{40})$/i;
 
     return 'appium:udid' in driver.capabilities && realDeviceRegex.test(driver.capabilities['appium:udid'] as string);
+}
+
+/**
+ * Android emulators report a serial that starts with "emulator-".
+ * Real Android devices use a numeric or alphanumeric USB serial — never that prefix.
+ */
+export function isAndroidRealDevice(): boolean {
+    const serial = (
+        (driver.capabilities as Record<string, unknown>)['appium:udid'] ??
+        (driver.capabilities as Record<string, unknown>)['udid'] ??
+        ''
+    ) as string;
+
+    return driver.isAndroid && !serial.toLowerCase().startsWith('emulator-');
 }
 
 /**
@@ -28,7 +52,7 @@ export async function openDeepLinkUrl(url:string) {
         // Life is so much easier
         return driver.execute('mobile:deepLink', {
             url: `${ prefix }${ url }`,
-            package: 'com.wdiodemoapp',
+            package: PACKAGE_NAME,
         });
     }
 
@@ -45,40 +69,30 @@ export async function openDeepLinkUrl(url:string) {
         // This can be 2 different elements, or the button, or the text field
         // Use the predicate string because  the accessibility label will return 2 different types
         // of elements making it flaky to use. With predicate string we can be more precise
-        const addressBarSelector = 'label == "Address" OR name == "URL"';
-        const urlFieldSelector = 'type == "XCUIElementTypeTextField" && name CONTAINS "URL"';
-        const addressBar = $(`-ios predicate string:${ addressBarSelector }`);
-        const urlField = $(`-ios predicate string:${ urlFieldSelector }`);
+        const addressBar = $(SELECTORS.IOS_SAFARI_ADDRESS_BAR);
+        const urlField = $(SELECTORS.IOS_SAFARI_URL_FIELD);
 
         // Wait for the url button to appear and click on it so the text field will appear
         // iOS 13 now has the keyboard open by default because the URL field has focus when opening the Safari browser
         if (!(await driver.isKeyboardShown())) {
-            await addressBar.waitForDisplayed();
+            await addressBar.waitForDisplayed({ timeoutMsg: 'Safari address bar not shown within timeout' });
             await addressBar.click();
         }
+
+        // Wait for the text field to be ready before typing \u2014 it may not be
+        // immediately interactive after the address bar click triggers focus.
+        await urlField.waitForDisplayed({ timeoutMsg: 'Safari URL text field not displayed within timeout' });
 
         // Submit the url and add a break
         await urlField.setValue(`${ prefix }${ url }\uE007`);
     } else {
-        // Else we ne are a simulator
-        await driver.url(`${ prefix }${ url }`);
-    }
-
-    /**
-     * PRO TIP:
-     * if you started the iOS device with `autoAcceptAlerts:true` in the capabilities then Appium will auto accept the alert that should
-     * be shown now. You can then comment out the code below
-     */
-    // Wait for the notification and accept it
-    // When using an iOS simulator you will only get the pop-up once, all the other times it won't be shown
-    try {
-        const openSelector = 'type == \'XCUIElementTypeButton\' && name CONTAINS \'Open\'';
-        const openButton = $(`-ios predicate string:${ openSelector }`);
-        // Assumption is made that the alert will be seen within 2 seconds, if not it did not appear
-        await openButton.waitForDisplayed({ timeout: 2000 });
-        await openButton.click();
-    } catch (e) {
-        // ignore
+        // Use mobile: deepLink for iOS simulators — activates the app by bundle ID first,
+        // then navigates to the URL within it. This avoids the SpringBoard "Open in app?"
+        // dialog that driver.url() triggers on iOS 26.x.
+        await driver.execute('mobile: deepLink', {
+            url: `${ prefix }${ url }`,
+            bundleId: BUNDLE_ID,
+        });
     }
 }
 
@@ -130,8 +144,9 @@ export async function executeInHomeScreenContext(action:() => Promise<void>): Pr
     try {
         // Execute the action in the home screen context
         result = await action();
-    } catch (e) {
-        // Ignore any exceptions during the action
+    } catch {
+        // Expected: SpringBoard dialog not present — the biometric permission alert
+        // was already accepted in a prior session.  No action required.
     }
 
     // Revert to the original app context

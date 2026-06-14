@@ -2,6 +2,14 @@ import AppScreen from './AppScreen.js';
 
 const SELECTORS = {
     SCREEN: '~Login-screen',
+    LOGIN_CONTAINER: '~button-login-container',
+    SIGN_UP_CONTAINER: '~button-sign-up-container',
+    LOGIN_BUTTON: '~button-LOGIN',
+    SIGN_UP_BUTTON: '~button-SIGN UP',
+    EMAIL: '~input-email',
+    PASSWORD: '~input-password',
+    REPEAT_PASSWORD: '~input-repeat-password',
+    BIOMETRIC_BUTTON: '~button-biometric',
 };
 
 class LoginScreen extends AppScreen {
@@ -9,15 +17,24 @@ class LoginScreen extends AppScreen {
         super(SELECTORS.SCREEN);
     }
 
+    // ~Login-screen is a plain View on iOS 26.x — not in the accessibility tree.
+    // Use the interactive login container button instead.
+    override async waitForIsShown (isShown = true): Promise<boolean | void> {
+        return this.loginContainerButton.waitForDisplayed({
+            reverse: !isShown,
+            timeoutMsg: `Screen (Login) not ${isShown ? 'shown' : 'hidden'} within timeout`,
+        });
+    }
+
     get screen () {return $(SELECTORS.SCREEN);}
-    private get loginContainerButton () {return $('~button-login-container');}
-    private get signUpContainerButton () {return $('~button-sign-up-container');}
-    private get loginButton () {return $('~button-LOGIN');}
-    private get signUpButton () {return $('~button-SIGN UP');}
-    private get email () {return $('~input-email');}
-    private get password () {return $('~input-password');}
-    private get repeatPassword () {return $('~input-repeat-password');}
-    private get biometricButton () {return $('~button-biometric');}
+    private get loginContainerButton () {return $(SELECTORS.LOGIN_CONTAINER);}
+    private get signUpContainerButton () {return $(SELECTORS.SIGN_UP_CONTAINER);}
+    private get loginButton () {return $(SELECTORS.LOGIN_BUTTON);}
+    private get signUpButton () {return $(SELECTORS.SIGN_UP_BUTTON);}
+    private get email () {return $(SELECTORS.EMAIL);}
+    private get password () {return $(SELECTORS.PASSWORD);}
+    private get repeatPassword () {return $(SELECTORS.REPEAT_PASSWORD);}
+    private get biometricButton () {return $(SELECTORS.BIOMETRIC_BUTTON);}
 
     async isBiometricButtonDisplayed () {
         return this.biometricButton.isDisplayed();
@@ -38,26 +55,8 @@ class LoginScreen extends AppScreen {
     async submitLoginForm({ username, password }:{username:string; password:string;}) {
         await this.email.setValue(username);
         await this.password.setValue(password);
-
-        if (await driver.isKeyboardShown()) {
-            /**
-             * Normally we would hide the keyboard with this command `driver.hideKeyboard()`, but there is an issue for hiding the keyboard
-             * on iOS when using the command. You will get an error like below
-             *
-             *  Request failed with status 400 due to Error Domain=com.facebook.WebDriverAgent Code=1 "The keyboard on iPhone cannot be
-             *  dismissed because of a known XCTest issue. Try to dismiss it in the way supported by your application under test."
-             *  UserInfo={NSLocalizedDescription=The keyboard on iPhone cannot be dismissed because of a known XCTest issue. Try to dismiss
-             *  it in the way supported by your application under test.}
-             *
-             * That's why we click outside of the keyboard.
-             */
-            await $('~Login-screen').click();
-        }
-        // On smaller screens there could be a possibility that the button is not shown
-        // This uses the "new" `scrollIntoView` method that now also supports native apps
-        await this.loginButton.scrollIntoView({
-            scrollableElement: await this.screen,
-        });
+        await this.hideKeyboardAfterInput();
+        await this.loginButton.scrollIntoView();
         await this.loginButton.click();
     }
 
@@ -65,25 +64,22 @@ class LoginScreen extends AppScreen {
         await this.email.setValue(username);
         await this.password.setValue(password);
         await this.repeatPassword.setValue(password);
-
-        if (await driver.isKeyboardShown()) {
-            /**
-             * Normally we would hide the keyboard with this command `driver.hideKeyboard()`, but there is an issue for hiding the keyboard
-             * on iOS when using the command. You will get an error like below
-             *
-             *  Request failed with status 400 due to Error Domain=com.facebook.WebDriverAgent Code=1 "The keyboard on iPhone cannot be
-             *  dismissed because of a known XCTest issue. Try to dismiss it in the way supported by your application under test."
-             *  UserInfo={NSLocalizedDescription=The keyboard on iPhone cannot be dismissed because of a known XCTest issue. Try to dismiss
-             *  it in the way supported by your application under test.}
-             *
-             * That's why we click outside of the keyboard.
-             */
-            await $('~Login-screen').click();
-        }
-        // On smaller screens there could be a possibility that the button is not shown
-        // This uses the "new" `scrollIntoView` method that now also supports native apps
-        await this.signUpButton.scrollIntoView({scrollableElement: await this.screen});
+        await this.hideKeyboardAfterInput();
+        // iOS 26.x: XCUITest no longer exposes XCUIElementTypeApplication as a scrollable element.
+        // Pass an explicit ScrollView so scrollIntoView can resolve the container.
+        await this.signUpButton.scrollIntoView({ scrollableElement: this.scrollContainer });
         await this.signUpButton.click();
+    }
+
+    private get scrollContainer() {
+        return driver.isIOS
+            ? $('-ios predicate string:type == "XCUIElementTypeScrollView"')
+            : $('android=new UiScrollable(new UiSelector().scrollable(true))');
+    }
+
+    // hideKeyboard() throws on iOS — BaseScreen.dismissKeyboard() falls back to tapping the element.
+    private async hideKeyboardAfterInput(): Promise<void> {
+        await this.dismissKeyboard(this.loginContainerButton);
     }
 }
 

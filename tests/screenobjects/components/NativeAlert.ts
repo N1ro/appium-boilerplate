@@ -1,8 +1,10 @@
+import { PACKAGE_NAME, TIMEOUTS } from '../../helpers/Constants.js';
+
 const SELECTORS = {
     ANDROID: {
-        ALERT_TITLE: '*//android.widget.TextView[@resource-id="android:id/alertTitle"]',
-        ALERT_MESSAGE: '*//android.widget.TextView[@resource-id="android:id/message"]',
-        ALERT_BUTTON: '*//android.widget.Button[@text="{BUTTON_TEXT}"]',
+        ALERT_TITLE: `android=new UiSelector().resourceId("${PACKAGE_NAME}:id/alert_title")`,
+        ALERT_MESSAGE: 'android=new UiSelector().resourceId("android:id/message")',
+        ALERT_BUTTON: 'android=new UiSelector().text("{BUTTON_TEXT}")',
     },
     IOS: {
         ALERT: '-ios predicate string:type == \'XCUIElementTypeAlert\'',
@@ -21,8 +23,9 @@ class NativeAlert {
             : SELECTORS.IOS.ALERT;
 
         return $(selector).waitForExist({
-            timeout: 11000,
+            timeout: TIMEOUTS.SHORT_PLUS,
             reverse: !isShown,
+            timeoutMsg: `Native alert not ${isShown ? 'shown' : 'hidden'} within ${TIMEOUTS.SHORT_PLUS / 1000}s`,
         });
     }
 
@@ -36,7 +39,7 @@ class NativeAlert {
      *  Use the text of the button, provide a string and it will automatically transform it to uppercase
      *  and click on the button
      */
-    static async topOnButtonWithText (selector: string) {
+    static async tapOnButtonWithText (selector: string) {
         const buttonSelector = driver.isAndroid
             ? SELECTORS.ANDROID.ALERT_BUTTON.replace(/{BUTTON_TEXT}/, selector.toUpperCase())
             : `~${selector}`;
